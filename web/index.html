@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BALL · 智能赛事预测中枢</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <canvas id="bg"></canvas>
+
+  <div class="app">
+    <!-- ===================== 侧边栏 ===================== -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark"><span class="dot"></span></div>
+        <div class="brand-text">
+          <div class="brand-name">BALL</div>
+          <div class="brand-sub">PREDICT · HUB</div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-view="overview">
+          <i data-lucide="layout-dashboard"></i><span>总览</span>
+        </button>
+        <button class="nav-item" data-view="database">
+          <i data-lucide="database"></i><span>数据浏览</span>
+        </button>
+        <button class="nav-item" data-view="models">
+          <i data-lucide="brain"></i><span>模型 · 训练</span>
+        </button>
+        <button class="nav-item" data-view="predictions">
+          <i data-lucide="sparkles"></i><span>预测中心</span>
+        </button>
+        <button class="nav-item" data-view="ops">
+          <i data-lucide="terminal"></i><span>操作台</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="status-dot"></span>
+        <span class="status-text" id="conn-status">系统就绪</span>
+      </div>
+    </aside>
+
+    <!-- ===================== 主区 ===================== -->
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">总览</h1>
+          <p id="page-sub">实时数据可视化与模型控制台</p>
+        </div>
+        <div class="topbar-actions">
+          <button class="ghost-btn" id="refresh-btn"><i data-lucide="refresh-cw"></i>刷新</button>
+        </div>
+      </header>
+
+      <!-- ---------- 总览 ---------- -->
+      <section class="view active" id="view-overview">
+        <div class="stat-grid" id="stat-grid"></div>
+        <div class="grid-2">
+          <div class="card chart-card">
+            <div class="card-head"><h3>各联赛比赛数</h3><span class="muted">TOP 12</span></div>
+            <div id="chart-leagues" class="chart"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>最近预测</h3><span class="muted">最新 8 条</span></div>
+            <div id="recent-list" class="recent-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 数据浏览 ---------- -->
+      <section class="view" id="view-database">
+        <div class="tabs" id="data-tabs">
+          <button class="tab active" data-tab="leagues">联赛</button>
+          <button class="tab" data-tab="teams">球队</button>
+          <button class="tab" data-tab="matches">比赛</button>
+        </div>
+        <div class="toolbar">
+          <input id="data-search" class="search" placeholder="搜索…" />
+          <select id="data-league" class="select"></select>
+        </div>
+        <div class="card" style="padding:0;overflow:hidden">
+          <div id="data-table" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <!-- ---------- 模型 ---------- -->
+      <section class="view" id="view-models">
+        <div class="grid-2" id="model-grid"></div>
+      </section>
+
+      <!-- ---------- 预测中心 ---------- -->
+      <section class="view" id="view-predictions">
+        <div id="predictions-wrap"></div>
+      </section>
+
+      <!-- ---------- 操作台 ---------- -->
+      <section class="view" id="view-ops">
+        <div class="card">
+          <div class="card-head"><h3>流程操作</h3><span class="muted">点击触发，实时日志流</span></div>
+          <div class="ops-grid" id="ops-grid"></div>
+        </div>
+        <div class="card terminal-card">
+          <div class="terminal-head">
+            <span class="t-dot r"></span><span class="t-dot y"></span><span class="t-dot g"></span>
+            <span class="terminal-title">ball@hub — 实时日志</span>
+          </div>
+          <pre id="terminal" class="terminal"></pre>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

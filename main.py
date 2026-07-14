@@ -109,6 +109,10 @@ def main(argv: list[str] | None = None) -> int:
     p_st.add_argument("--train-missing", action="store_true",
                       help="对缺少模型的竞彩联赛尝试训练（需该联赛已有≥50场历史）")
 
+    p_web = sub.add_parser("web", help="启动 Web 可视化与操作控制台")
+    p_web.add_argument("--host", default="127.0.0.1", help="监听地址")
+    p_web.add_argument("--port", type=int, default=8000, help="监听端口")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "init":
@@ -204,6 +208,14 @@ def main(argv: list[str] | None = None) -> int:
             pipeline.sporttery(notify=args.notify, sync=args.sync,
                             train_missing=args.train_missing),
             ensure_ascii=False, indent=2, default=str))
+        return 0
+
+    if args.cmd == "web":
+        import uvicorn
+        from ball.web import server
+        logger.info("启动 Web 控制台：http://%s:%d", args.host, args.port)
+        uvicorn.run(server.app, host=args.host, port=args.port,
+                    log_level="info")
         return 0
 
     return 0
