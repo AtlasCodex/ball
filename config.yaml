@@ -16,16 +16,47 @@ crawler:
   # 要抓取的历史赛季（按月分批扩充样本）；'2023' 表示 2023-24 赛季
   seasons: ["2023", "2024"]
 
-  # 足球顶级联赛（ESPN league code）
+  # 足球联赛（ESPN league code）。体彩每周开售联赛不固定，这里覆盖竞彩
+  # 常见的联赛，便于 crawl/train 后能对更多竞猜场次给出预测。
+  # 联赛越多，全量爬取越耗时，可按需增删。
   leagues:
     football:
+      # 欧洲五大联赛
       - { name: "English Premier League", code: "eng.1" }
       - { name: "Spanish La Liga",        code: "esp.1" }
       - { name: "Italian Serie A",        code: "ita.1" }
       - { name: "German Bundesliga",      code: "ger.1" }
       - { name: "French Ligue 1",         code: "fra.1" }
+      # 其他欧洲主流
+      - { name: "Dutch Eredivisie",       code: "ned.1" }
+      - { name: "Portuguese Primeira Liga", code: "por.1" }
+      - { name: "Scottish Premiership",   code: "sco.1" }
+      - { name: "Belgian Pro League",     code: "bel.1" }
+      - { name: "Turkish Super Lig",      code: "tur.1" }
+      - { name: "Russian Premier League", code: "rus.1" }
+      - { name: "Swiss Super League",     code: "sui.1" }
+      - { name: "Austrian Bundesliga",    code: "aut.1" }
+      - { name: "Greek Super League",     code: "gre.1" }
+      # 北欧
+      - { name: "Danish Superliga",       code: "den.1" }
+      - { name: "Swedish Allsvenskan",    code: "swe.1" }
+      - { name: "Norwegian Eliteserien",  code: "nor.1" }
+      # 美洲 / 亚洲 / 其他
+      - { name: "Brazilian Serie A",      code: "bra.1" }
+      - { name: "Argentine Primera",      code: "arg.1" }
+      - { name: "Mexican Liga MX",        code: "mex.1" }
+      - { name: "MLS",                    code: "usa.1" }
+      - { name: "Japanese J1 League",     code: "jpn.1" }
+      - { name: "Australian A-League",    code: "aus.1" }
+      - { name: "Saudi Pro League",       code: "ksa.1" }
+      - { name: "Chinese Super League",   code: "chn.1" }
+      # 欧战 / 洲际俱乐部
+      - { name: "UEFA Champions League",  code: "uefa.champions" }
+      - { name: "UEFA Europa League",     code: "uefa.europa" }
+      - { name: "UEFA Conference League", code: "uefa.europa.conf" }
     nba:
       - { name: "NBA", code: "nba" }
+      - { name: "WNBA", code: "wnba" }
 
 dl:
   model_type: "neural"       # neural | xgboost(未实现)
@@ -56,6 +87,14 @@ notify:
     recipients:
       - "wenlinxie@foxmail.com"
     subject_prefix: "Ball 预测"
+
+# ----------------- 体彩竞猜（官方赛程 + 本地匹配预测） -----------------
+# 体彩每周开售的联赛不固定，本功能抓取官方竞猜赛程，
+# 通过 ball/sporttery/mapping.py 的桥接表匹配到本地 ESPN 赛程后预测。
+sporttery:
+  enabled: true
+  lookahead_days: 7        # --sync 时抓取 ESPN 赛程的窗口（天）
+  auto_train_min_history: 50
 
 pipeline:
   notify_on: "daily"         # daily | matchday

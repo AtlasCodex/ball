@@ -5,10 +5,12 @@
   python main.py init
   python main.py crawl --sport football --league eng.1 --season 2024
   python main.py train --sport football --league eng.1
+  python main.py train --sport football          # 批量：所有足球联赛各自独立训练
   python main.py predict --sport football --league eng.1
   python main.py notify --sport football --league eng.1 --name "英超"
   python main.py run --sport football --league eng.1 --season 2024 --train --notify
-  python main.py run-all --season 2024
+  python main.py run-all --seasons 2023,2024 --train --notify
+    # 全联赛：各自训练 -> 各自按赛程预测 -> 汇总成【一封】邮件统一推送
 """
 from __future__ import annotations
 
@@ -63,9 +65,10 @@ def main(argv: list[str] | None = None) -> int:
     p_crawl.add_argument("--detail-limit", type=int, default=None,
                          help="限制本次抓取的比赛技术数据场次")
 
-    p_train = sub.add_parser("train", help="训练模型")
+    p_train = sub.add_parser(
+        "train", help="训练模型（不指定 --league 则批量训练该 sport 所有联赛，各自独立）")
     p_train.add_argument("--sport", default="football", choices=["football", "nba"])
-    p_train.add_argument("--league", default=None)
+    p_train.add_argument("--league", default=None, help="指定联赛 code 则只训该联赛；省略则批量")
 
     p_pred = sub.add_parser("predict", help="预测即将进行的比赛")
     p_pred.add_argument("--sport", default="football", choices=["football", "nba"])
@@ -99,6 +102,13 @@ def main(argv: list[str] | None = None) -> int:
     p_sched.add_argument("--every", type=int, default=24, help="爬取间隔（小时）")
     p_sched.add_argument("--season", default=None)
 
+    p_st = sub.add_parser("sporttery", help="体彩竞猜：抓取赛程+匹配+预测+推送")
+    p_st.add_argument("--notify", action="store_true", help="邮件推送预测报告")
+    p_st.add_argument("--sync", action="store_true",
+                      help="先抓取竞彩涉及联赛的 ESPN 近期赛程以便匹配")
+    p_st.add_argument("--train-missing", action="store_true",
+                      help="对缺少模型的竞彩联赛尝试训练（需该联赛已有≥50场历史）")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "init":
@@ -115,8 +125,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "train":
-        lg = _league_from_config(args.sport, args.league)
-        print(json.dumps(pipeline.train(lg, args.sport), ensure_ascii=False, indent=2))
+        # 指定 --league 训单个；否则批量训该 sport 下所有配置联赛（各自独立）。
+        print(json.dumps(
+            pipeline.train(args.league, args.sport), ensure_ascii=False, indent=2))
         return 0
 
     if args.cmd == "predict":
@@ -143,16 +154,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run-all":
         seasons = _parse_seasons(args.seasons)
         results = {}
+        preds_by_league: dict[str, list[dict]] = {}
+        # 1) 逐个联赛：抓取 + 各自独立训练（不单独推送）
+        # 2) 各联赛按自身赛程分别预测
         for sport, key in [("football", "football"), ("nba", "nba")]:
             for lg in get(f"crawler.leagues.{key}", []) or []:
                 code = lg["code"]
                 name = lg.get("name", code)
                 logger.info("=== 处理 %s ===", name)
                 r = pipeline.full(code, sport, args.season, None,
-                                  do_train=args.train, do_notify=args.notify,
+                                  do_train=args.train, do_notify=False,
                                   seasons=seasons, fetch_details=not args.no_details,
                                   detail_limit=args.detail_limit)
                 results[code] = r
+                preds_by_league[code] = r.get("predict") or []
+        # 3) 统一推送：所有联赛的预测汇总成**一封**邮件
+        if args.notify:
+            results["__notify__"] = pipeline.notify_all(preds_by_league)
         print(json.dumps(results, ensure_ascii=False, indent=2, default=str))
         return 0
 
@@ -179,6 +197,13 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(60)
         except KeyboardInterrupt:
             logger.info("调度已停止。")
+        return 0
+
+    if args.cmd == "sporttery":
+        print(json.dumps(
+            pipeline.sporttery(notify=args.notify, sync=args.sync,
+                            train_missing=args.train_missing),
+            ensure_ascii=False, indent=2, default=str))
         return 0
 
     return 0

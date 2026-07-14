@@ -51,6 +51,65 @@ class Notifier:
             logger.warning("[NOTIFY] 邮件发送失败：%s，回退本地文件。", exc)
             return self._save_local(title, content, error=str(exc))
 
+    # ------------------------- 通用报告入口 -------------------------
+    def send_report(self, subject_suffix: str, html: str,
+                   text: str | None = None) -> dict[str, Any]:
+        """发送任意 HTML 报告（如体彩竞猜预测）。"""
+        if not self.enabled:
+            logger.info("[NOTIFY] 推送已禁用，仅本地输出。")
+            return self._save_local(subject_suffix, text or self._strip_html(html))
+        try:
+            return self._send_report_email(subject_suffix, html, text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[NOTIFY] 邮件发送失败：%s，回退本地文件。", exc)
+            return self._save_local(subject_suffix, text or self._strip_html(html), error=str(exc))
+
+    def _send_report_email(self, subject_suffix: str, html: str,
+                           text: str | None) -> dict[str, Any]:
+        ec = self.cfg.get("email", {}) or {}
+        host = ec.get("smtp_host") or "smtp.163.com"
+        port = int(ec.get("smtp_port") or 465)
+        username = ec.get("username") or ""
+        password = ec.get("password") or ""
+        if not username or not password:
+            raise ValueError("email 模式需要 notify.email.username / password")
+        sender = ec.get("sender") or username
+        sender_name = ec.get("sender_name") or "Ball 预测系统"
+        recipients = ec.get("recipients") or [username]
+        prefix = ec.get("subject_prefix") or "Ball 预测"
+
+        subject = f"{prefix} · {subject_suffix}"
+        plain = text or self._strip_html(html)
+
+        msg = MIMEMultipart("alternative")
+        msg["From"] = formataddr((sender_name, sender))
+        msg["To"] = ", ".join(recipients)
+        msg["Subject"] = subject
+        msg["Date"] = formatdate(localtime=True)
+        msg.attach(MIMEText(plain, "plain", "utf-8"))
+        msg.attach(MIMEText(html, "html", "utf-8"))
+
+        use_ssl = bool(ec.get("use_ssl", True))
+        if use_ssl:
+            server = smtplib.SMTP_SSL(host, port, timeout=30)
+        else:
+            server = smtplib.SMTP(host, port, timeout=30)
+            server.starttls()
+        try:
+            server.login(username, password)
+            server.sendmail(sender, recipients, msg.as_string())
+        finally:
+            server.quit()
+
+        logger.info("[NOTIFY] 邮件推送成功：%s -> %s", subject, ", ".join(recipients))
+        return {"channel": "email", "ok": True, "subject": subject,
+                "recipients": recipients}
+
+    def _strip_html(html: str) -> str:
+        import re
+
+        return re.sub(r"<[^>]+>", "", html or "").strip()
+
     # ------------------------- 邮件发送 -------------------------
     def _send_email(self, title: str, content: str,
                     predictions: list[dict] | None,
@@ -181,6 +240,62 @@ class Notifier:
             f'置信度：<b style="color:#4f46e5;">{escape(str(conf_pct))}</b></div>'
             "</td></tr></table>"
         )
+
+    def build_multi_html(self, title: str,
+                        predictions_by_league: dict[str, list[dict]],
+                        league_names: dict[str, str] | None = None) -> str:
+        """多联赛汇总 HTML：每个联赛一个分节（标题 + 该联赛预测卡片）。"""
+        league_names = league_names or {}
+        sections = ""
+        total = 0
+        for code, preds in predictions_by_league.items():
+            name = league_names.get(code, code)
+            total += len(preds)
+            if preds:
+                cards = "".join(self._prediction_card(p) for p in preds)
+            else:
+                cards = (
+                    '<div style="padding:18px;background:#fafbff;border:1px solid '
+                    '#eceef4;border-radius:12px;color:#6b7280;font-size:14px;">'
+                    "（近期暂无赛程）</div>"
+                )
+            sections += (
+                '<div style="margin-top:18px;font-size:16px;font-weight:700;'
+                'color:#111827;padding-bottom:6px;border-bottom:2px solid #4f46e5;">'
+                f'{escape(str(name))}'
+                f'<span style="font-size:12px;font-weight:400;color:#9ca3af;'
+                f'margin-left:8px;">{len(preds)} 场</span></div>'
+                f'<div style="padding:12px 0 4px;">{cards}</div>'
+            )
+
+        generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+        return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{escape(title)}</title></head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,'PingFang SC','Microsoft YaHei',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,0.06);">
+        <tr><td style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);padding:28px 32px;">
+          <div style="font-size:12px;letter-spacing:2px;color:rgba(255,255,255,0.8);text-transform:uppercase;">Ball 预测系统</div>
+          <div style="font-size:22px;font-weight:700;color:#ffffff;margin-top:6px;">{escape(title)}</div>
+        </td></tr>
+        <tr><td style="padding:20px 32px 0;">
+          <div style="font-size:13px;color:#6b7280;">生成时间：{generated}</div>
+          <div style="font-size:13px;color:#6b7280;margin-top:4px;">覆盖联赛：<b style="color:#111827;">{len(predictions_by_league)}</b> 个 · 待预测场次：<b style="color:#111827;">{total}</b></div>
+        </td></tr>
+        <tr><td style="padding:8px 32px 8px;">{sections}</td></tr>
+        <tr><td style="padding:20px 32px 28px;border-top:1px solid #eef0f3;">
+          <div style="font-size:12px;color:#9ca3af;line-height:1.6;">以上由 Ball 预测系统自动生成，仅供参考，不构成任何投注建议。</div>
+        </td></tr>
+      </table>
+      <div style="font-size:11px;color:#c0c4cc;margin-top:12px;">本邮件由系统自动发送，请勿直接回复。</div>
+    </td></tr>
+  </table>
+</body>
+</html>"""
 
     # ------------------------- 本地兜底（保存 + 打印） -------------------------
     def _save_local(self, title: str, content: str,

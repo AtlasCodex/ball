@@ -109,3 +109,51 @@ def predict_upcoming(league_code: str, sport: str | None = None,
             })
     logger.info("[%s] 预测 %d 场即将进行的比赛", league_code, len(results))
     return results
+
+
+def predict_for_match_ids(league_code: str, sport: str | None,
+                          match_ids: list[int]) -> dict[int, dict]:
+    """对指定的若干 match_id 预测（用于体彩竞猜匹配到的场次）。
+
+    返回 {match_id: {label, prob_home, prob_draw, prob_away, confidence}}。
+    若联赛模型不存在抛 FileNotFoundError（由调用方决定降级策略）。
+    """
+    if not match_ids:
+        return {}
+    model, meta = _load(league_code)
+    sport = sport or meta.get("sport", "football")
+    scaler = meta["scaler"]
+    label_map = meta["label_map"]
+    num_classes = meta["num_classes"]
+
+    all_s, home_s, away_s = compute_team_stats(league_code, sport)
+
+    out: dict[int, dict] = {}
+    with session_scope() as s:
+        for mid in set(match_ids):
+            m = s.get(Match, mid)
+            if m is None or not m.home_team_id or not m.away_team_id:
+                continue
+            vec = np.array(
+                [feature_vector(m.home_team_id, m.away_team_id,
+                                all_s, home_s, away_s, sport)],
+                dtype=np.float32,
+            )
+            x = torch.tensor(scaler.transform(vec), dtype=torch.float32)
+            probs = model.predict_proba(x).numpy()[0]
+            pred_idx = int(np.argmax(probs))
+            label = label_map.get(pred_idx, "unknown")
+            if num_classes == 3:
+                ph, pd_, pa = float(probs[0]), float(probs[1]), float(probs[2])
+            else:
+                ph, pd_, pa = float(probs[0]), 0.0, float(probs[1])
+            out[mid] = {
+                "match_id": mid,
+                "label": label,
+                "prob_home": ph,
+                "prob_draw": pd_,
+                "prob_away": pa,
+                "confidence": float(probs[pred_idx]),
+            }
+    logger.info("[%s] 指定场次预测 %d 场", league_code, len(out))
+    return out
