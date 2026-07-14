@@ -1,0 +1,21 @@
+# 数据与模型产物（按需保留/忽略）
+data/
+*.db
+*.pt
+*.pkl
+
+# 密钥
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 本地抓取脚本与日志
+_crawl_all.py
+crawl_log.txt
+
+# 项目记忆（本地上下文，不入库）
+.codebuddy/

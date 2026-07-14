@@ -1,0 +1,62 @@
+# ============================================================
+# Ball 项目配置
+# 环境变量可在 .env 中覆盖（${VAR} 会被自动替换）
+# ============================================================
+
+database:
+  # SQLite 默认即可；也可换成 PostgreSQL: postgresql+psycopg2://user:pass@host:5432/ball
+  url: "sqlite:///data/ball.db"
+
+crawler:
+  request_delay: 1.0        # 每次请求之间的间隔（秒），避免被限流
+  timeout: 20                # 请求超时（秒）
+  retries: 3                 # 失败重试次数
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+  # 要抓取的历史赛季（按月分批扩充样本）；'2023' 表示 2023-24 赛季
+  seasons: ["2023", "2024"]
+
+  # 足球顶级联赛（ESPN league code）
+  leagues:
+    football:
+      - { name: "English Premier League", code: "eng.1" }
+      - { name: "Spanish La Liga",        code: "esp.1" }
+      - { name: "Italian Serie A",        code: "ita.1" }
+      - { name: "German Bundesliga",      code: "ger.1" }
+      - { name: "French Ligue 1",         code: "fra.1" }
+    nba:
+      - { name: "NBA", code: "nba" }
+
+dl:
+  model_type: "neural"       # neural | xgboost(未实现)
+  sport: "football"          # 训练默认针对的运动
+  league: "eng.1"
+  epochs: 60
+  batch_size: 64
+  learning_rate: 0.001
+  hidden_dim: 64
+  dropout: 0.2
+  test_size: 0.2
+  random_seed: 42
+
+# ----------------- 预测结果推送（仅邮箱） -----------------
+notify:
+  channel: "email"
+  enabled: true
+  file_dir: "data/reports"          # 邮件发送失败时的本地兜底目录
+
+  email:
+    smtp_host: "smtp.163.com"
+    smtp_port: 465
+    use_ssl: true
+    username: "wenlin_x@163.com"
+    password: "${EMAIL_AUTH_CODE}"   # 在 .env 中配置（163 客户端授权码，非登录密码）
+    sender_name: "Ball 预测系统"
+    sender: "wenlin_x@163.com"
+    recipients:
+      - "wenlinxie@foxmail.com"
+    subject_prefix: "Ball 预测"
+
+pipeline:
+  notify_on: "daily"         # daily | matchday
+  lookahead_days: 3          # 赛程前瞻预测的天数窗口
