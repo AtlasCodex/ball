@@ -39,6 +39,9 @@
         <button class="nav-item" data-view="predictions">
           <i data-lucide="sparkles"></i><span>预测中心</span>
         </button>
+        <button class="nav-item" data-view="players">
+          <i data-lucide="users"></i><span>球员</span>
+        </button>
         <button class="nav-item" data-view="ops">
           <i data-lucide="terminal"></i><span>操作台</span>
         </button>
@@ -102,6 +105,26 @@
       <section class="view" id="view-predictions">
         <div id="predictions-wrap"></div>
       </section>
+
+      <!-- ---------- 球员 ---------- -->
+      <section class="view" id="view-players">
+        <div class="tabs" id="player-tabs">
+          <button class="tab active" data-ptab="leaders">赛季榜</button>
+          <button class="tab" data-ptab="match">单场明细</button>
+          <button class="tab" data-ptab="dir">球员目录</button>
+        </div>
+        <div class="toolbar">
+          <select id="player-sport" class="select">
+            <option value="football">足球</option>
+            <option value="nba">篮球</option>
+          </select>
+          <select id="player-league" class="select"></select>
+          <select id="player-match" class="select" style="display:none;min-width:260px"></select>
+          <input id="player-search" class="search" placeholder="搜索球员 / 关键词…" style="display:none" />
+        </div>
+        <div id="player-content"></div>
+      </section>
+
 
       <!-- ---------- 操作台 ---------- -->
       <section class="view" id="view-ops">

@@ -113,6 +113,12 @@ def main(argv: list[str] | None = None) -> int:
     p_web.add_argument("--host", default="127.0.0.1", help="监听地址")
     p_web.add_argument("--port", type=int, default=8000, help="监听端口")
 
+    p_pstats = sub.add_parser(
+        "players", help="把已抓取的 boxscore/leaders 解析为结构化球员与球队统计")
+    p_pstats.add_argument("--sport", default="football", choices=["football", "nba"])
+    p_pstats.add_argument("--league", default=None, help="指定联赛；省略则批量处理该 sport 全部配置联赛")
+    p_pstats.add_argument("--limit", type=int, default=None, help="限制回填的原始详情条数")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "init":
@@ -216,6 +222,18 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("启动 Web 控制台：http://%s:%d", args.host, args.port)
         uvicorn.run(server.app, host=args.host, port=args.port,
                     log_level="info")
+        return 0
+
+    if args.cmd == "players":
+        if args.league:
+            out = pipeline.sync_player_stats(args.league, args.sport, limit=args.limit)
+        else:
+            out = {}
+            for lg in get(f"crawler.leagues.{'nba' if args.sport == 'nba' else 'football'}", []) or []:
+                code = lg["code"]
+                out[code] = pipeline.sync_player_stats(
+                    code, args.sport, limit=args.limit).get(code)
+        print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
         return 0
 
     return 0

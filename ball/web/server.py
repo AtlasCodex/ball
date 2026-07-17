@@ -23,7 +23,16 @@ from sqlalchemy.orm import aliased
 from ball import pipeline
 from ball.config import get
 from ball.db.engine import session_scope
-from ball.db.models import League, Match, Prediction, Team
+from ball.db.models import (
+    League,
+    Match,
+    MatchTeamStat,
+    Player,
+    PlayerGameStat,
+    Prediction,
+    Team,
+    create_all,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +41,9 @@ WEB_DIR = ROOT / "web"
 MODELS_DIR = ROOT / "data" / "models"
 
 app = FastAPI(title="Ball 可视化中枢", version="1.0")
+
+# 确保球员/球队统计等新表存在
+create_all()
 
 
 # ============================ 工具 ============================
@@ -267,6 +279,173 @@ def api_predictions(sport: str | None = None) -> dict:
     return by_league
 
 
+# ============================ 球员 / 球队统计 API ============================
+_PLAYER_BB = ["points", "rebounds", "offensive_rebounds", "defensive_rebounds",
+              "assists", "steals", "blocks", "turnovers", "fouls", "plus_minus",
+              "field_goals_made", "field_goals_attempted", "three_made",
+              "three_attempted", "free_throws_made", "free_throws_attempted"]
+_PLAYER_FB = ["goals", "assists", "shots", "shots_on_target", "passes",
+              "passes_completed", "pass_accuracy", "tackles", "interceptions",
+              "clearances", "yellow_cards", "red_cards", "saves",
+              "fouls_committed", "fouls_drawn", "offsides", "rating"]
+_TEAM_KEYS = ["possession_pct", "total_shots", "shots_on_target", "fouls_committed",
+               "yellow_cards", "red_cards", "corners", "offsides", "passes",
+               "passes_completed", "pass_accuracy", "tackles", "saves", "points",
+               "total_rebounds", "offensive_rebounds", "defensive_rebounds",
+               "assists", "steals", "blocks", "turnovers", "fouls",
+               "field_goals_made", "field_goals_attempted", "three_made",
+               "three_attempted", "free_throws_made", "free_throws_attempted",
+               "plus_minus"]
+
+
+def _player_row(p: "PlayerGameStat") -> dict:
+    d = {
+        "id": p.id, "player_id": p.player_id, "name": p.player_name,
+        "team_id": p.team_id, "position": p.position, "jersey": p.jersey,
+        "starter": p.starter, "did_not_play": p.did_not_play,
+        "active": p.active, "minutes": p.minutes, "stat_type": p.stat_type,
+    }
+    cols = _PLAYER_BB if p.sport == "basketball" else _PLAYER_FB
+    for k in cols:
+        v = getattr(p, k)
+        if v is not None:
+            d[k] = v
+    return d
+
+
+def _player_sort_key(p: "PlayerGameStat"):
+    if p.sport == "basketball":
+        return (p.points or 0, p.rebounds or 0)
+    return (p.goals or 0, p.assists or 0)
+
+
+def _team_stat_dict(ts: "MatchTeamStat") -> dict:
+    if ts is None:
+        return None
+    stats = {k: getattr(ts, k) for k in _TEAM_KEYS if getattr(ts, k) is not None}
+    return {"team_name": ts.team_name, "is_home": ts.is_home,
+            "sport": ts.sport, "stats": stats}
+
+
+@app.get("/api/player-stats")
+def api_player_stats(match_id: int) -> dict:
+    """单场比赛的双方球队技术统计 + 球员表现。"""
+    with session_scope() as s:
+        m = s.get(Match, match_id)
+        if m is None:
+            raise HTTPException(404, "比赛不存在")
+        home = s.get(Team, m.home_team_id) if m.home_team_id else None
+        away = s.get(Team, m.away_team_id) if m.away_team_id else None
+        ts = s.scalars(
+            select(MatchTeamStat).where(MatchTeamStat.match_id == match_id)
+        ).all()
+        pgs = s.scalars(
+            select(PlayerGameStat).where(PlayerGameStat.match_id == match_id)
+        ).all()
+
+        def block(t: Optional[Team]):
+            if t is None:
+                return {"team_id": None, "name": "?", "logo": None,
+                        "is_home": False, "players": [], "team_stats": None}
+            src = t.source_id
+            players = sorted(
+                [p for p in pgs if (p.team_id == t.id or p.source_team_id == src)],
+                key=_player_sort_key, reverse=True)
+            tstat = next((x for x in ts if x.team_id == t.id or x.source_team_id == src), None)
+            return {
+                "team_id": t.id, "name": t.name, "logo": t.logo_url,
+                "is_home": m.home_team_id == t.id,
+                "players": [_player_row(p) for p in players],
+                "team_stats": _team_stat_dict(tstat),
+            }
+
+        return {
+            "match": _match_row(m, home.name if home else "?",
+                               away.name if away else "?", home.logo_url if home else None,
+                               away.logo_url if away else None),
+            "sport": m.sport,
+            "home": block(home),
+            "away": block(away),
+            "team_stats": [_team_stat_dict(x) for x in ts],
+        }
+
+
+@app.get("/api/players")
+def api_players(league: str | None = None, sport: str | None = None,
+                search: str | None = None, limit: int = 300) -> list[dict]:
+    """球员目录（来自 players 主表）。"""
+    with session_scope() as s:
+        q = (
+            select(Player, League.sport)
+            .join(League, League.code == Player.league_code, isouter=True)
+        )
+        if league:
+            q = q.where(Player.league_code == league)
+        if sport:
+            q = q.where(League.sport == sport)
+        if search:
+            q = q.where(Player.name.ilike(f"%{search}%"))
+        q = q.order_by(Player.name).limit(limit)
+        rows = s.execute(q).all()
+        return [
+            {"id": p.id, "name": p.name, "league_code": p.league_code,
+             "position": p.position, "jersey": p.jersey, "team_id": p.team_id,
+             "sport": sp, "status": p.status}
+            for p, sp in rows
+        ]
+
+
+@app.get("/api/player-leaders")
+def api_player_leaders(league: str | None = None, sport: str | None = None,
+                       limit: int = 20) -> dict:
+    """赛季球员榜（按联赛/运动聚合 PlayerGameStat）。
+
+    足球：进球/助攻/射门/射正/传球/黄牌/红牌/扑救/抢断；
+    篮球：得分/篮板/助攻/抢断/盖帽/失误/犯规。
+    """
+    sport = sport or "football"
+    if sport == "basketball":
+        metrics = [("points", "得分"), ("rebounds", "篮板"), ("assists", "助攻"),
+                   ("steals", "抢断"), ("blocks", "盖帽"), ("turnovers", "失误"),
+                   ("fouls", "犯规")]
+    else:
+        metrics = [("goals", "进球"), ("assists", "助攻"), ("shots", "射门"),
+                   ("shots_on_target", "射正"), ("passes", "传球"),
+                   ("passes_completed", "成功传球"), ("yellow_cards", "黄牌"),
+                   ("red_cards", "红牌"), ("saves", "扑救"), ("tackles", "抢断")]
+    boards: list[dict] = []
+    with session_scope() as s:
+        for col, label in metrics:
+            attr = getattr(PlayerGameStat, col)
+            q = (
+                select(PlayerGameStat.source_player_id, PlayerGameStat.player_name,
+                       PlayerGameStat.team_name, PlayerGameStat.player_id,
+                       func.coalesce(func.sum(attr), 0).label("v"),
+                       func.count(func.distinct(PlayerGameStat.match_id)).label("games"))
+                .where(PlayerGameStat.sport == sport)
+                .group_by(PlayerGameStat.source_player_id, PlayerGameStat.player_name,
+                          PlayerGameStat.team_name, PlayerGameStat.player_id)
+                .having(func.coalesce(func.sum(attr), 0) > 0)
+                .order_by(func.sum(attr).desc())
+                .limit(limit)
+            )
+            if league:
+                q = q.where(PlayerGameStat.league_code == league)
+            rows = s.execute(q).all()
+            boards.append({
+                "metric": col, "label": label,
+                "rows": [
+                    {"source_player_id": r[0], "name": r[1], "team": r[2],
+                     "player_id": r[3], "value": float(r[4]), "games": int(r[5])}
+                    for r in rows
+                ],
+            })
+    return {"sport": sport, "league": league, "boards": boards}
+
+
+
+
+
 # ============================ 操作任务（后台 + SSE 日志） ============================
 _tasks: dict[str, "Task"] = {}
 
@@ -363,6 +542,9 @@ def _run_op(task: Task, action: str, params: dict) -> None:
                 sync=params.get("sync", False),
                 train_missing=params.get("train_missing", False),
             )
+        elif action == "players":
+            task.result = pipeline.sync_player_stats(
+                params.get("league"), sport, limit=params.get("limit"))
         elif action == "notify":
             preds = pipeline.predict_all(sport)
             task.result = pipeline.notify_all(preds, sport=sport)

@@ -64,6 +64,20 @@ def predict(league_code: str, sport: str, lookahead_days: int | None = None) -> 
     return predict_upcoming(league_code, sport=sport, lookahead_days=lookahead_days)
 
 
+def sync_player_stats(league_code: str, sport: str,
+                     limit: int | None = None) -> dict:
+    """将已抓取但未结构化的 boxscore / leaders 详情解析为球员与球队统计表。
+
+    - 篮球：boxscore 提供完整球员逐项数据（得分/篮板/助攻/抢断/盖帽/失误/犯规…）。
+    - 足球：boxscore 仅提供球队级统计；球员个人数据来自 leaders 榜
+      （射手/助攻/射门/传球等分类榜），按球员聚合。
+    两运动的球队级统计都从 boxscore.teams 结构化落地。
+    """
+    crawler = make_crawler(sport, league_code)
+    n = crawler.rebuild_player_stats(limit)
+    return {league_code: n}
+
+
 def notify(league_code: str, league_name: str, sport: str) -> dict:
     from ball.dl.predict import predict_upcoming
     from ball.notifier import Notifier

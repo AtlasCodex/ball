@@ -5,6 +5,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     Float,
@@ -119,6 +120,12 @@ class Match(Base):
     predictions: Mapped[list["Prediction"]] = relationship(
         back_populates="match", cascade="all, delete-orphan"
     )
+    player_stats: Mapped[list["PlayerGameStat"]] = relationship(
+        back_populates="match", cascade="all, delete-orphan"
+    )
+    team_stats: Mapped[list["MatchTeamStat"]] = relationship(
+        back_populates="match", cascade="all, delete-orphan"
+    )
 
 
 class MatchDetail(Base):
@@ -181,3 +188,144 @@ def create_all() -> None:
     from ball.db.engine import engine
 
     Base.metadata.create_all(engine)
+
+
+class PlayerGameStat(Base):
+    """单场球员表现统计（篮球来自 boxscore 完整数据，足球来自 leaders 榜）。
+
+    关系：match_id → Match，player_id → Player（按 source_id 关联，可为空），
+    team_id → Team（按 source_id 关联，可为空）。source_player_id /
+    source_team_id 始终保留原始 ESPN id，保证即使未匹配到主表也能正确归并。
+    """
+
+    __tablename__ = "player_game_stats"
+    __table_args__ = (
+        UniqueConstraint("match_id", "source_player_id", "stat_type",
+                        name="uq_player_game"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"))
+    player_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("players.id"), nullable=True)
+    team_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("teams.id"), nullable=True)
+
+    league_code: Mapped[str] = mapped_column(String(32))
+    sport: Mapped[str] = mapped_column(String(16), default="football")
+    source_player_id: Mapped[str] = mapped_column(String(32))
+    source_team_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    player_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    team_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    position: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    jersey: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    starter: Mapped[bool] = mapped_column(Boolean, default=False)
+    did_not_play: Mapped[bool] = mapped_column(Boolean, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    minutes: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    # 篮球字段
+    points: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rebounds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    offensive_rebounds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    defensive_rebounds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    assists: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    steals: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    blocks: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    turnovers: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    plus_minus: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    field_goals_made: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    field_goals_attempted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    three_made: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    three_attempted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    free_throws_made: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    free_throws_attempted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # 足球字段
+    goals: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    passes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    passes_completed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    pass_accuracy: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tackles: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    interceptions: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    clearances: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    saves: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    fouls_committed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    fouls_drawn: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    offsides: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rating: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    stat_type: Mapped[str] = mapped_column(String(16), default="boxscore")  # boxscore | leaders
+    raw_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 原始统计，便于回溯
+
+    match: Mapped["Match"] = relationship(back_populates="player_stats")
+    player: Mapped[Optional["Player"]] = relationship()
+    team: Mapped[Optional["Team"]] = relationship()
+
+
+class MatchTeamStat(Base):
+    """单场比赛的球队级技术统计（来自 boxscore.teams[i].statistics）。
+
+    两运动共用一张表：篮球/足球各自有意义的列会被填充，其余为空；
+    stats_json 保存全部原始键值对，保证完整性与可扩展。
+    """
+
+    __tablename__ = "match_team_stats"
+    __table_args__ = (
+        UniqueConstraint("match_id", "source_team_id", name="uq_match_team"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"))
+    team_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("teams.id"), nullable=True)
+    league_code: Mapped[str] = mapped_column(String(32))
+    sport: Mapped[str] = mapped_column(String(16), default="football")
+    source_team_id: Mapped[str] = mapped_column(String(32))
+    team_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    is_home: Mapped[bool] = mapped_column(Boolean, default=False)
+    stat_type: Mapped[str] = mapped_column(String(16), default="boxscore")
+
+    stats_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # 足球球队统计
+    possession_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    total_shots: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    shots_on_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    fouls_committed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    yellow_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    red_cards: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    corners: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    offsides: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    passes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    passes_completed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    pass_accuracy: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tackles: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    saves: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # 篮球球队统计
+    points: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_rebounds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    offensive_rebounds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    defensive_rebounds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    assists: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    steals: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    blocks: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    turnovers: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    fouls: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    field_goals_made: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    field_goals_attempted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    three_made: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    three_attempted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    free_throws_made: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    free_throws_attempted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    plus_minus: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    match: Mapped["Match"] = relationship(back_populates="team_stats")
+    team: Mapped[Optional["Team"]] = relationship()

@@ -172,7 +172,7 @@ async function loadData() {
   } else {
     rows = await getJSON(`/api/matches?limit=150${league ? `&league=${league}` : ""}${search ? `&search=${encodeURIComponent(search)}` : ""}`);
     html = `<table><thead><tr><th>时间</th><th>联赛</th><th>主队</th><th>比分</th><th>客队</th><th>状态</th></tr></thead><tbody>` +
-      rows.map((m) => `<tr>
+      rows.map((m) => `<tr class="row-click" data-mid="${m.id}">
         <td class="cell-num">${(m.start_time || "").slice(0, 16).replace("T", " ")}</td>
         <td class="cell-num">${m.league_code}</td>
         <td class="cell-strong">${m.home.name || "?"}</td>
@@ -333,12 +333,176 @@ function buildOpControls() {
   head.insertAdjacentElement("afterend", bar);
 }
 
+// ============================ 球员模块 ============================
+let pTab = "leaders";
+let playerLeagueOpts = [];
+
+const PSTAT_COLS = {
+  basketball: [["points", "分"], ["rebounds", "板"], ["assists", "助"], ["steals", "断"],
+    ["blocks", "帽"], ["turnovers", "误"], ["fouls", "犯"], ["minutes", "分钟"]],
+  football: [["goals", "球"], ["assists", "助"], ["shots", "射"], ["shots_on_target", "正"],
+    ["passes", "传"], ["pass_accuracy", "准"], ["yellow_cards", "黄"], ["red_cards", "红"],
+    ["saves", "扑"], ["tackles", "断"], ["minutes", "分钟"]],
+};
+const TSTAT_LABELS = {
+  possession_pct: "控球率", total_shots: "射门", shots_on_target: "射正",
+  fouls_committed: "犯规", yellow_cards: "黄牌", red_cards: "红牌", corners: "角球",
+  offsides: "越位", passes: "传球", passes_completed: "成功传球", pass_accuracy: "传球成功率",
+  tackles: "抢断", saves: "扑救", points: "得分", total_rebounds: "篮板",
+  offensive_rebounds: "前场板", defensive_rebounds: "后场板", assists: "助攻",
+  steals: "抢断", blocks: "盖帽", turnovers: "失误", fouls: "犯规",
+  field_goals_made: "命中", field_goals_attempted: "出手", three_made: "三分中",
+  three_attempted: "三分出", free_throws_made: "罚中", free_throws_attempted: "罚出",
+  plus_minus: "正负",
+};
+
+function populatePlayerLeague() {
+  const sp = $("#player-sport").value;
+  playerLeagueOpts = leagueOptions.filter((l) =>
+    (sp === "nba" ? l.sport === "basketball" : l.sport === "football"));
+  $("#player-league").innerHTML =
+    '<option value="">全部联赛</option>' +
+    playerLeagueOpts.map((l) => `<option value="${l.code}">${l.name}</option>`).join("");
+}
+
+async function loadPlayers() {
+  const c = $("#player-content");
+  if (pTab === "leaders") { await loadLeaders(); }
+  else if (pTab === "match") { await loadPlayerMatch(); }
+  else { await loadPlayerDir(); }
+}
+
+async function loadLeaders() {
+  const c = $("#player-content");
+  const sp = $("#player-sport").value;
+  const lg = $("#player-league").value;
+  c.innerHTML = '<div class="muted" style="padding:24px">加载中…</div>';
+  try {
+    const d = await getJSON(`/api/player-leaders?sport=${sp}${lg ? `&league=${lg}` : ""}&limit=15`);
+    if (!d.boards.length || d.boards.every((b) => !b.rows.length)) {
+      c.innerHTML = '<div class="muted" style="padding:30px">该联赛暂无结构化球员数据，请先到「操作台」运行抓取，再用 <code>python main.py players</code> 回填。</div>';
+      return;
+    }
+    c.innerHTML = '<div class="board-grid">' + d.boards.map((b) => {
+      const rows = b.rows.map((r, i) => `<tr>
+        <td class="cell-num" style="color:#fcd34d">${i + 1}</td>
+        <td class="cell-strong">${r.name}</td>
+        <td class="muted">${r.team || "—"}</td>
+        <td class="cell-num" style="color:#22d3ee">${r.value}${b.metric === "pass_accuracy" ? "%" : ""}</td>
+        <td class="cell-num muted">${r.games}场</td>
+      </tr>`).join("");
+      return `<div class="card board-card">
+        <div class="card-head"><h3>${b.label}榜</h3><span class="muted">TOP ${b.rows.length}</span></div>
+        <table class="mini"><thead><tr><th>#</th><th>球员</th><th>球队</th><th>数据</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" class="muted">暂无</td></tr>'}</tbody></table>
+      </div>`;
+    }).join("") + "</div>";
+  } catch (e) { c.innerHTML = `<div class="muted" style="padding:20px">加载失败：${e.message}</div>`; }
+}
+
+async function loadPlayerMatch() {
+  const c = $("#player-content");
+  const lg = $("#player-league").value;
+  const sel = $("#player-match");
+  if (!sel.dataset.ready || sel.dataset.lg !== lg) {
+    c.innerHTML = '<div class="muted" style="padding:24px">加载比赛列表…</div>';
+    try {
+      const rows = await getJSON(`/api/matches?limit=150${lg ? `&league=${lg}` : ""}&status=final`);
+      sel.innerHTML = '<option value="">选择一场比赛…</option>' +
+        rows.map((m) => `<option value="${m.id}">${(m.start_time || "").slice(0, 10)} · ${m.home.name} vs ${m.away.name}</option>`).join("");
+      sel.dataset.ready = "1"; sel.dataset.lg = lg;
+    } catch (e) { c.innerHTML = `<div class="muted">比赛列表加载失败：${e.message}</div>`; return; }
+  }
+  const mid = sel.value;
+  if (!mid) { c.innerHTML = '<div class="muted" style="padding:30px">请选择一场已结束的比赛查看球员表现。</div>'; return; }
+  c.innerHTML = '<div class="muted" style="padding:24px">加载比赛明细…</div>';
+  try {
+    const d = await getJSON(`/api/player-stats?match_id=${mid}`);
+    renderMatchDetail(d, c);
+  } catch (e) { c.innerHTML = `<div class="muted">加载失败：${e.message}</div>`; }
+}
+
+function renderMatchDetail(d, c) {
+  const cols = PSTAT_COLS[d.sport] || [];
+  const blockHtml = (side) => {
+    const t = d[side];
+    const ts = t.team_stats && t.team_stats.stats ? t.team_stats.stats : {};
+    const tsRows = Object.keys(ts).map((k) =>
+      `<div class="ts-row"><span>${TSTAT_LABELS[k] || k}</span><b>${ts[k]}${k === "pass_accuracy" || k === "possession_pct" ? "%" : ""}</b></div>`).join("");
+    const players = t.players || [];
+    const pRows = players.length ? players.map((p) => {
+      const cells = cols.map(([k, lbl]) => {
+        let v = p[k];
+        if (k === "starter") v = p.starter ? "✓" : "";
+        if (k === "minutes" && v) v = v + "′";
+        return `<td class="cell-num">${v ?? "—"}</td>`;
+      }).join("");
+      return `<tr class="${p.starter ? "starter-row" : ""}">
+        <td class="cell-strong">${p.jersey ? "#" + p.jersey + " " : ""}${p.name || "?"}</td>
+        <td class="muted">${p.position || ""}</td>${cells}</tr>`;
+    }).join("") : '<tr><td colspan="' + (cols.length + 2) + '" class="muted">该场暂无结构化球员数据（数据源未提供免费球员统计）</td></tr>';
+    const head = cols.map(([, lbl]) => `<th>${lbl}</th>`).join("");
+    return `<div class="card team-card ${side}">
+      <div class="card-head"><h3>${t.name || "?"}</h3>
+        ${t.team_stats ? '<span class="muted">球队技术统计</span>' : ""}</div>
+      ${tsRows ? `<div class="ts-grid">${tsRows}</div>` : ""}
+      <div class="table-wrap" style="padding:0">
+        <table class="mini"><thead><tr><th>球员</th><th></th>${head}</tr></thead><tbody>${pRows}</tbody></table>
+      </div>
+    </div>`;
+  };
+  c.innerHTML = `<div class="match-head">${d.match.home.name} <span class="muted">vs</span> ${d.match.away.name}
+    <span class="score">${d.match.home_score ?? "–"} : ${d.match.away_score ?? "–"}</span></div>
+    <div class="grid-2 team-grid">${blockHtml("home")}${blockHtml("away")}</div>`;
+}
+
+async function loadPlayerDir() {
+  const c = $("#player-content");
+  const sp = $("#player-sport").value;
+  const lg = $("#player-league").value;
+  const q = $("#player-search").value.trim();
+  c.innerHTML = '<div class="muted" style="padding:24px">加载中…</div>';
+  try {
+    const rows = await getJSON(`/api/players?limit=300${sp ? `&sport=${sp}` : ""}${lg ? `&league=${lg}` : ""}${q ? `&search=${encodeURIComponent(q)}` : ""}`);
+    if (!rows.length) { c.innerHTML = '<div class="muted" style="padding:30px">未找到球员。</div>'; return; }
+    c.innerHTML = `<div class="card" style="padding:0;overflow:hidden"><div class="table-wrap">
+      <table><thead><tr><th>球员</th><th>联赛</th><th>位置</th><th>号码</th><th>状态</th></tr></thead><tbody>` +
+      rows.map((p) => `<tr>
+        <td class="cell-strong">${p.name}</td>
+        <td class="cell-num">${p.league_code}</td>
+        <td>${p.position || "—"}</td>
+        <td class="cell-num">${p.jersey ?? "—"}</td>
+        <td><span class="pill ${p.status || ""}">${p.status || "—"}</span></td>
+      </tr>`).join("") + "</tbody></table></div></div>";
+  } catch (e) { c.innerHTML = `<div class="muted">加载失败：${e.message}</div>`; }
+}
+
+function showPlayerTab(tab) {
+  pTab = tab;
+  $$("#player-tabs .tab").forEach((x) => x.classList.toggle("active", x.dataset.ptab === tab));
+  const isMatch = tab === "match", isDir = tab === "dir";
+  $("#player-match").style.display = isMatch ? "" : "none";
+  $("#player-search").style.display = isDir ? "" : "none";
+  loadPlayers();
+}
+
+async function openMatchDetail(mid) {
+  switchView("players");
+  showPlayerTab("match");
+  const sel = $("#player-match");
+  sel.dataset.ready = ""; // 重新拉取并选中
+  await loadPlayerMatch();
+  sel.value = String(mid);
+  await loadPlayerMatch();
+}
+
 // ============================ 路由 ============================
 const TITLES = {
   overview: ["总览", "实时数据可视化与模型控制台"],
   database: ["数据浏览", "联赛 / 球队 / 比赛全景查询"],
   models: ["模型 · 训练", "各联赛独立模型状态与训练触发"],
   predictions: ["预测中心", "多联赛概率可视化与置信度"],
+  players: ["球员", "球员表现 · 赛季榜 · 单场明细"],
   ops: ["操作台", "抓取 / 训练 / 预测 / 推送 一键触发"],
 };
 
@@ -352,6 +516,7 @@ function switchView(view) {
   else if (view === "database") loadData();
   else if (view === "models") loadModels();
   else if (view === "predictions") loadPredictions();
+  else if (view === "players") loadPlayers();
   else if (view === "ops") { /* 已构建 */ }
 }
 
@@ -385,6 +550,19 @@ async function boot() {
   buildOps();
   await initDataControls();
   buildOpControls();
+  // 球员模块
+  populatePlayerLeague();
+  $$("#player-tabs .tab").forEach((t) =>
+    t.addEventListener("click", () => showPlayerTab(t.dataset.ptab)));
+  $("#player-sport").addEventListener("change", () => { populatePlayerLeague(); $("#player-match").dataset.ready = ""; loadPlayers(); });
+  $("#player-league").addEventListener("change", () => { $("#player-match").dataset.ready = ""; loadPlayers(); });
+  $("#player-match").addEventListener("change", loadPlayerMatch);
+  $("#player-search").addEventListener("input", debounce(loadPlayerDir, 300));
+  // 比赛下钻：点击「数据浏览-比赛」行打开单场球员明细
+  document.addEventListener("click", (e) => {
+    const row = e.target.closest("tr.row-click");
+    if (row && row.dataset.mid) openMatchDetail(row.dataset.mid);
+  });
   switchView("overview");
 }
 

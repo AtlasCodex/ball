@@ -297,6 +297,30 @@ tbody tr:hover { background: var(--panel-2); }
 ::-webkit-scrollbar-thumb { background: rgba(139,92,246,.3); border-radius: 6px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(139,92,246,.5); }
 
+/* ===================== 球员模块 ===================== */
+.row-click { cursor: pointer; }
+.row-click:hover { background: rgba(139,92,246,.10) !important; }
+.board-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.board-card { padding: 0; overflow: hidden; }
+.board-card .card-head { padding: 14px 16px 8px; }
+.board-card table.mini { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.board-card table.mini th { text-align: left; color: var(--muted-2); font-weight: 500; padding: 6px 14px; border-top: 1px solid var(--border); }
+.board-card table.mini td { padding: 7px 14px; border-top: 1px solid rgba(255,255,255,.04); }
+.match-head { font-family: var(--font-display); font-size: 19px; font-weight: 700; margin: 4px 0 18px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.match-head .score { color: var(--amber); margin-left: 4px; }
+.team-grid { align-items: start; }
+.team-card { padding: 0; overflow: hidden; }
+.team-card .card-head { padding: 14px 16px 6px; display: flex; justify-content: space-between; align-items: baseline; }
+.team-card.away .card-head h3 { color: var(--cyan); }
+.ts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px 14px; padding: 4px 16px 12px; }
+.ts-row { display: flex; justify-content: space-between; font-size: 12.5px; border-bottom: 1px dashed rgba(255,255,255,.06); padding-bottom: 4px; }
+.ts-row span { color: var(--muted-2); }
+.ts-row b { color: var(--text); }
+table.mini { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.mini th { text-align: left; color: var(--muted-2); font-weight: 500; padding: 7px 14px; border-top: 1px solid var(--border); }
+table.mini td { padding: 7px 14px; border-top: 1px solid rgba(255,255,255,.04); }
+.starter-row td.cell-strong { color: #fff; font-weight: 600; }
+
 @media (max-width: 1100px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .grid-2, .ops-grid { grid-template-columns: 1fr; }

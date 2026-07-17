@@ -18,7 +18,16 @@ from sqlalchemy import select
 
 from ball.config import get
 from ball.db.engine import session_scope
-from ball.db.models import Injury, League, Match, MatchDetail, Player, Team
+from ball.db.models import (
+    Injury,
+    League,
+    Match,
+    MatchDetail,
+    MatchTeamStat,
+    Player,
+    PlayerGameStat,
+    Team,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +82,8 @@ class Crawler:
         self.league_code = league_code
         self.season = season
         self.client = ESPNClient(self.sport, league_code)
+        self._pmap: Optional[dict] = None  # (source_id -> player.id) 回填时一次性装载
+        self._tmap: Optional[dict] = None  # (source_id -> team.id)
 
     # ------------------------- 基础 upsert -------------------------
     def _get_league(self, session, name: str) -> League:
@@ -468,6 +479,11 @@ class Crawler:
                 return
             for kind, obj in parts.items():
                 self._upsert_detail(session, match.id, kind, obj)
+            # 结构化落地：球队技术统计 + 球员表现
+            if "boxscore" in parts:
+                self._ingest_boxscore(session, match, parts["boxscore"])
+            if "leaders" in parts and self.sport != "basketball":
+                self._ingest_leaders(session, match, parts["leaders"])
             match.detail_fetched = True
         logger.debug("[%s] 同步比赛技术数据 event=%s parts=%s",
                      self.league_code, event_id, list(parts.keys()))
@@ -524,6 +540,351 @@ class Crawler:
         logger.info("[%s] 比赛技术数据抓取完成，共 %d 场", self.league_code, done)
         return done
 
+    # ------------------------- 球员 / 球队结构化统计 -------------------------
+    def _lookup_player_id(self, session, source_player_id: Optional[str]):
+        if not source_player_id or source_player_id == "None":
+            return None
+        if self._pmap is not None:
+            return self._pmap.get((self.league_code, str(source_player_id)))
+        row = session.scalar(
+            select(Player.id).where(
+                Player.league_code == self.league_code,
+                Player.source_id == str(source_player_id),
+            )
+        )
+        return row
+
+    def _ensure_player_id(self, session, source_player_id, name,
+                          league_code: Optional[str] = None, team_id=None,
+                          position=None, jersey=None, headshot=None):
+        """返回 Player.id；若 players 表中不存在，则创建一条（保证 player_id 关联完整）。
+
+        补齐球员目录，使球员级统计的行都能正确外键关联到 players 主表，
+        而非仅停留在 source_player_id 字符串层面。
+        """
+        if not source_player_id or source_player_id == "None":
+            return None
+        key = str(source_player_id)
+        lc = league_code or self.league_code
+        if self._pmap is not None:
+            pid = self._pmap.get((lc, key))
+            if pid is not None:
+                return pid
+        else:
+            pid = session.scalar(
+                select(Player.id).where(
+                    Player.league_code == lc, Player.source_id == key))
+            if pid is not None:
+                return pid
+        # 不存在 → 创建
+        p = Player(
+            source_id=key, league_code=lc, name=name or "",
+            position=position, jersey=jersey, team_id=team_id,
+            headshot_url=headshot, status="active",
+        )
+        session.add(p)
+        session.flush()
+        pid = p.id
+        if self._pmap is not None:
+            self._pmap[(lc, key)] = pid
+        return pid
+
+    def _lookup_team_id(self, session, source_team_id: Optional[str]):
+        if not source_team_id or source_team_id == "None":
+            return None
+        if self._tmap is not None:
+            return self._tmap.get(str(source_team_id))
+        row = session.scalar(
+            select(Team.id).where(
+                Team.league_code == self.league_code,
+                Team.source_id == str(source_team_id),
+            )
+        )
+        return row
+
+    def _upsert_team_stat(self, session, match, team_block: dict) -> None:
+        """从 boxscore.teams[i] 解析球队级技术统计。两运动通用。"""
+        team_obj = team_block.get("team") or {}
+        src_team = str(team_obj.get("id")) if team_obj.get("id") else None
+        if not src_team:
+            return
+        stats = _team_stat_pairs(team_block.get("statistics"))
+        row = session.scalar(
+            select(MatchTeamStat).where(
+                MatchTeamStat.match_id == match.id,
+                MatchTeamStat.source_team_id == src_team,
+            )
+        )
+        if row is None:
+            row = MatchTeamStat(
+                match_id=match.id, source_team_id=src_team,
+                league_code=self.league_code,
+                sport="basketball" if self.sport == "basketball" else "football",
+            )
+            session.add(row)
+        row.team_name = team_obj.get("displayName")
+        row.is_home = (team_block.get("homeAway") == "home")
+        row.stats_json = json.dumps(stats, ensure_ascii=False)
+        t = self._lookup_team_id(session, src_team)
+        row.team_id = t
+        # 通用映射
+        g = lambda k: stats.get(k)
+        if self.sport == "basketball":
+            row.points = _to_int(g("points"))
+            row.total_rebounds = _to_int(g("totalRebounds"))
+            row.offensive_rebounds = _to_int(g("offensiveRebounds"))
+            row.defensive_rebounds = _to_int(g("defensiveRebounds"))
+            row.assists = _to_int(g("assists"))
+            row.steals = _to_int(g("steals"))
+            row.blocks = _to_int(g("blocks"))
+            row.turnovers = _to_int(g("turnovers"))
+            row.fouls = _to_int(g("fouls"))
+            row.plus_minus = _to_int(g("plusMinus"))
+            row.field_goals_made = _to_int(g("fieldGoalsMade"))
+            row.field_goals_attempted = _to_int(g("fieldGoalsAttempted"))
+            row.three_made = _to_int(g("threePointFieldGoalsMade"))
+            row.three_attempted = _to_int(g("threePointFieldGoalsAttempted"))
+            row.free_throws_made = _to_int(g("freeThrowsMade"))
+            row.free_throws_attempted = _to_int(g("freeThrowsAttempted"))
+        else:
+            row.possession_pct = g("possessionPct") or g("possession")
+            row.total_shots = _to_int(g("totalShots"))
+            row.shots_on_target = _to_int(g("shotsOnTarget"))
+            row.fouls_committed = _to_int(g("foulsCommitted"))
+            row.yellow_cards = _to_int(g("yellowCards"))
+            row.red_cards = _to_int(g("redCards"))
+            row.corners = _to_int(g("wonCorners")) or _to_int(g("corners"))
+            row.offsides = _to_int(g("offsides"))
+            row.passes = _to_int(g("totalPasses"))
+            row.passes_completed = _to_int(g("accuratePasses"))
+            row.pass_accuracy = g("passesAccuracy")
+            row.tackles = _to_int(g("tackles")) or _to_int(g("totalTackles"))
+            row.saves = _to_int(g("saves")) or _to_int(g("totalSaves"))
+
+    def _upsert_player_bb(self, session, match, athlete: dict,
+                           stats: dict, src_team: Optional[str]) -> None:
+        """篮球：把 boxscore 中某个球员的一行写入 PlayerGameStat。"""
+        aid = str(athlete.get("id")) if athlete.get("id") else None
+        if not aid:
+            return
+        row = session.scalar(
+            select(PlayerGameStat).where(
+                PlayerGameStat.match_id == match.id,
+                PlayerGameStat.source_player_id == aid,
+                PlayerGameStat.stat_type == "boxscore",
+            )
+        )
+        if row is None:
+            row = PlayerGameStat(
+                match_id=match.id, source_player_id=aid,
+                league_code=self.league_code, sport="basketball",
+                stat_type="boxscore",
+            )
+            session.add(row)
+        row.source_team_id = src_team
+        row.player_name = athlete.get("displayName")
+        pos = (athlete.get("position") or {}).get("abbreviation")
+        row.position = pos
+        row.jersey = _to_int(athlete.get("jersey"))
+        row.starter = bool(stats.get("starter", row.starter))
+        row.did_not_play = bool(stats.get("didNotPlay", row.did_not_play))
+        row.active = bool(stats.get("active", row.active))
+        row.minutes = str(stats.get("minutes")) if stats.get("minutes") is not None else None
+        row.points = _to_int(stats.get("points"))
+        row.rebounds = _to_int(stats.get("rebounds"))
+        row.offensive_rebounds = _to_int(stats.get("offensiveRebounds"))
+        row.defensive_rebounds = _to_int(stats.get("defensiveRebounds"))
+        row.assists = _to_int(stats.get("assists"))
+        row.steals = _to_int(stats.get("steals"))
+        row.blocks = _to_int(stats.get("blocks"))
+        row.turnovers = _to_int(stats.get("turnovers"))
+        row.fouls = _to_int(stats.get("fouls"))
+        row.plus_minus = _to_int(stats.get("plusMinus"))
+        row.field_goals_made = _to_int(stats.get("fieldGoalsMade"))
+        row.field_goals_attempted = _to_int(stats.get("fieldGoalsAttempted"))
+        row.three_made = _to_int(stats.get("threePointFieldGoalsMade"))
+        row.three_attempted = _to_int(stats.get("threePointFieldGoalsAttempted"))
+        row.free_throws_made = _to_int(stats.get("freeThrowsMade"))
+        row.free_throws_attempted = _to_int(stats.get("freeThrowsAttempted"))
+        row.raw_json = json.dumps(
+            {"athlete": athlete, "stats": stats}, ensure_ascii=False)
+        t = self._lookup_team_id(session, src_team)
+        row.team_id = t
+        p = self._ensure_player_id(
+            session, aid, athlete.get("displayName"),
+            team_id=t, position=pos, jersey=row.jersey,
+            headshot=(athlete.get("headshot") or {}).get("href"),
+        )
+        if p:
+            row.player_id = p
+
+    def _upsert_player_fb(self, session, match, rec: dict) -> None:
+        """足球：把从 leaders 聚合后的某球员表现写入 PlayerGameStat。"""
+        aid = rec.get("source_player_id")
+        if not aid:
+            return
+        row = session.scalar(
+            select(PlayerGameStat).where(
+                PlayerGameStat.match_id == match.id,
+                PlayerGameStat.source_player_id == aid,
+                PlayerGameStat.stat_type == "leaders",
+            )
+        )
+        if row is None:
+            row = PlayerGameStat(
+                match_id=match.id, source_player_id=aid,
+                league_code=self.league_code, sport="football",
+                stat_type="leaders",
+            )
+            session.add(row)
+        row.source_team_id = rec.get("source_team_id")
+        row.player_name = rec.get("player_name")
+        row.position = rec.get("position")
+        row.jersey = rec.get("jersey")
+        s = rec.get("stats") or {}
+        row.goals = _to_int(s.get("totalGoals"))
+        row.assists = _to_int(s.get("totalAssists"))
+        row.shots = _to_int(s.get("totalShots"))
+        row.shots_on_target = _to_int(s.get("shotsOnTarget"))
+        row.passes = _to_int(s.get("totalPasses"))
+        row.passes_completed = _to_int(s.get("accuratePasses"))
+        row.pass_accuracy = s.get("passesAccuracy")
+        row.tackles = _to_int(s.get("tackles")) or _to_int(s.get("totalTackles"))
+        row.interceptions = _to_int(s.get("interceptions"))
+        row.clearances = _to_int(s.get("clearances"))
+        row.yellow_cards = _to_int(s.get("yellowCards"))
+        row.red_cards = _to_int(s.get("redCards"))
+        row.saves = _to_int(s.get("saves")) or _to_int(s.get("totalSaves"))
+        row.fouls_committed = _to_int(s.get("foulsCommitted"))
+        row.fouls_drawn = _to_int(s.get("foulsDrawn")) or _to_int(s.get("foulsSuffered"))
+        row.offsides = _to_int(s.get("offsides"))
+        row.rating = s.get("rating")
+        row.raw_json = json.dumps(rec, ensure_ascii=False)
+        t = self._lookup_team_id(session, row.source_team_id)
+        row.team_id = t
+        p = self._ensure_player_id(
+            session, aid, rec.get("player_name"),
+            team_id=t, position=rec.get("position"),
+            jersey=rec.get("jersey"),
+        )
+        if p:
+            row.player_id = p
+
+    def _ingest_boxscore(self, session, match, box: dict) -> None:
+        """解析 boxscore：球队级统计 + （篮球）球员逐项统计。"""
+        for t in (box.get("teams") or []):
+            if isinstance(t, dict):
+                self._upsert_team_stat(session, match, t)
+        # 球员逐项统计：仅篮球 boxscore 含 players 数组
+        for entry in (box.get("players") or []):
+            if not isinstance(entry, dict):
+                continue
+            src_team = str((entry.get("team") or {}).get("id"))
+            for sb in (entry.get("statistics") or []):
+                keys = (sb or {}).get("keys") or (sb or {}).get("names") or []
+                for ath in (sb.get("athletes") or []):
+                    if not isinstance(ath, dict):
+                        continue
+                    athlete = ath.get("athlete") or {}
+                    d = _align_stats(keys, ath.get("stats") or [])
+                    # 把 starter/didNotPlay/active 也并入，便于落地
+                    d["starter"] = ath.get("starter")
+                    d["didNotPlay"] = ath.get("didNotPlay")
+                    d["active"] = ath.get("active")
+                    self._upsert_player_bb(session, match, athlete, d, src_team)
+
+    def _ingest_leaders(self, session, match, leaders: Any) -> None:
+        """足球：leaders 提供各分类的球员榜（射手/助攻/射门…）。
+
+        同一球员可能在多个分类上榜，这里按 athlete id 聚合，
+        得到每名球员该场尽可能完整的表现快照（stat_type='leaders'）。
+        """
+        if not isinstance(leaders, list):
+            return
+        agg: dict[str, dict] = {}
+        for tblock in leaders:
+            if not isinstance(tblock, dict):
+                continue
+            src_team = str((tblock.get("team") or {}).get("id"))
+            for cblock in (tblock.get("leaders") or []):
+                if not isinstance(cblock, dict):
+                    continue
+                for ath_entry in (cblock.get("leaders") or []):
+                    if not isinstance(ath_entry, dict):
+                        continue
+                    athlete = ath_entry.get("athlete") or {}
+                    aid = str(athlete.get("id")) if athlete.get("id") else None
+                    if not aid:
+                        continue
+                    rec = agg.setdefault(aid, {
+                        "source_player_id": aid,
+                        "source_team_id": src_team,
+                        "player_name": athlete.get("displayName"),
+                        "position": (athlete.get("position") or {}).get("abbreviation"),
+                        "jersey": _to_int(athlete.get("jersey")),
+                        "stats": {},
+                    })
+                    for st in (ath_entry.get("statistics") or []):
+                        if isinstance(st, dict) and st.get("name"):
+                            rec["stats"][st["name"]] = _num(
+                                st.get("value", st.get("displayValue")))
+        for rec in agg.values():
+            self._upsert_player_fb(session, match, rec)
+
+    def rebuild_player_stats(self, limit: Optional[int] = None) -> int:
+        """回填：扫描已存库的 boxscore / leaders MatchDetail，结构化写入。
+
+        优化：一次性装载本联赛的 (source_id -> id) 映射，避免逐行查询；
+        eagerly 加载 match 消除 N+1。
+        """
+        from ball.db.models import create_all
+        create_all()
+        done = 0
+        batch = 400
+        # 预装载 id 映射（全局：ESPN 的 team/player id 在全球范围唯一，
+        # 不限定 league_code，避免同一 id 落到别的联赛导致关联失败）。
+        with session_scope() as s:
+            self._pmap = {
+                (lc, str(a)): i for i, lc, a in s.execute(
+                    select(Player.id, Player.league_code, Player.source_id)).all()}
+            self._tmap = {
+                str(a): i for i, a in s.execute(
+                    select(Team.id, Team.source_id)).all()}
+        try:
+            offset = 0
+            while True:
+                with session_scope() as s:
+                    rows = s.execute(
+                        select(MatchDetail, Match)
+                        .join(Match, Match.id == MatchDetail.match_id)
+                        .where(MatchDetail.kind.in_(["boxscore", "leaders"]))
+                        .where(Match.league_code == self.league_code)
+                        .order_by(MatchDetail.id)
+                        .limit(batch).offset(offset)
+                    ).all()
+                    if not rows:
+                        break
+                    for d, match in rows:
+                        if match is None:
+                            continue
+                        obj = json.loads(d.payload)
+                        if d.kind == "boxscore":
+                            self._ingest_boxscore(s, match, obj)
+                        elif d.kind == "leaders" and self.sport != "basketball":
+                            self._ingest_leaders(s, match, obj)
+                    done += len(rows)
+                offset += batch
+                if limit and done >= limit:
+                    break
+                logger.info("[%s] 已回填球员/球队统计 %d 条…",
+                            self.league_code, done)
+        finally:
+            self._pmap = None
+            self._tmap = None
+        logger.info("[%s] 球员/球队统计回填完成：%d 条原始详情",
+                    self.league_code, done)
+        return done
+
     # ------------------------- 全量 -------------------------
     def sync_all(self, dates: Optional[str] = None,
                  seasons: Optional[list[str]] = None,
@@ -558,6 +919,71 @@ def _to_int(value: Any) -> Optional[int]:
         return int(value)
     except (ValueError, TypeError):
         return None
+
+
+# ------------------------- 球员/球队统计解析辅助 -------------------------
+def _num(value: Any) -> Optional[float]:
+    """宽容地把 ESPN 统计值转成数字（字符串 / 数字 / 空）。"""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if s in ("", "-", "NULL", "None", "NaN"):
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _align_stats(keys: list, vals: list) -> dict:
+    """把 boxscore 球员行的 keys 与 stats 对齐成字典。
+
+    ESPN 篮球把 'fieldGoalsMade-fieldGoalsAttempted' 这种合并键的
+    取值写成 '10-15'，这里按 '-' 拆成两个逻辑字段。
+    """
+    d: dict[str, Any] = {}
+    if not isinstance(keys, list) or not isinstance(vals, list):
+        return d
+    for i, k in enumerate(keys):
+        v = vals[i] if i < len(vals) else None
+        if isinstance(k, str) and "-" in k:
+            sub = k.split("-")
+            if isinstance(v, str) and "-" in v:
+                parts = v.split("-")
+                if len(parts) == len(sub):
+                    for j, sk in enumerate(sub):
+                        d[sk] = _num(parts[j])
+                    continue
+            d[sub[0]] = _num(v)
+        else:
+            d[k] = _num(v)
+    return d
+
+
+def _team_stat_pairs(stats_list: Any) -> dict:
+    """把 boxscore.teams[i].statistics 列表整理成 {name: value}。
+
+    合并键（如 'fieldGoalsMade-fieldGoalsAttempted'）会拆成两个。
+    """
+    out: dict[str, Any] = {}
+    for st in stats_list or []:
+        if not isinstance(st, dict):
+            continue
+        name = st.get("name")
+        if not name:
+            continue
+        val = st.get("value", st.get("displayValue"))
+        if isinstance(name, str) and "-" in name and isinstance(val, str) and "-" in val:
+            parts = val.split("-")
+            subs = name.split("-")
+            if len(parts) == len(subs) == 2:
+                out[subs[0]] = _num(parts[0])
+                out[subs[1]] = _num(parts[1])
+                continue
+        out[name] = _num(val)
+    return out
 
 
 def _txt(value: Any) -> Optional[str]:
